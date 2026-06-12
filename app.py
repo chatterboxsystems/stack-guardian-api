@@ -13,7 +13,7 @@ CORS(app)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Persistent storage configuration
+# Persistent storage configuration (deployed 2026-06-12 04:50 UTC)
 DB_PATH = os.environ.get('PERSISTENT_DATA_PATH', '/tmp')
 DB_FILE = os.path.join(DB_PATH, 'stack-guardian.db')
 
