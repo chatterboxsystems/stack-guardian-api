@@ -14,8 +14,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Persistent storage configuration (deployed 2026-06-12 04:50 UTC)
-DB_PATH = os.environ.get('PERSISTENT_DATA_PATH', '/tmp')
+DB_PATH = os.environ.get('PERSISTENT_DATA_PATH', '/var/lib/stack-guardian/data')
 DB_FILE = os.path.join(DB_PATH, 'stack-guardian.db')
+
+# Ensure the directory exists
+os.makedirs(DB_PATH, exist_ok=True)
 
 # In-memory cache (for fast access within same session)
 _status = None
