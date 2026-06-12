@@ -2,18 +2,126 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 import json
 import os
+import sqlite3
+import signal
+import atexit
+import logging
 from datetime import datetime, timezone
 
 app = Flask(__name__)
 CORS(app)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# In-memory store — Watchtower POSTs here after every run
+# Persistent storage configuration
+DB_PATH = os.environ.get('PERSISTENT_DATA_PATH', '/tmp')
+DB_FILE = os.path.join(DB_PATH, 'stack-guardian.db')
+
+# In-memory cache (for fast access within same session)
 _status = None
 _history = []
 MAX_HISTORY = 96  # 48 hours at 30min intervals
 
 # Optional auth token — set WATCHTOWER_SECRET env var in Railway
 SECRET = os.environ.get('WATCHTOWER_SECRET', '')
+
+
+# ─── Database Functions ──────────────────────────────────────────────────────
+def init_db():
+    """Initialize SQLite database on startup."""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS status (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            data TEXT NOT NULL,
+            timestamp TEXT NOT NULL
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_time TEXT NOT NULL,
+            overall_status TEXT NOT NULL
+        )''')
+        conn.commit()
+        conn.close()
+        logger.info(f"Database initialized at {DB_FILE}")
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {e}")
+
+
+def load_persisted_state():
+    """Load most recent status from disk."""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute('SELECT data FROM status ORDER BY id DESC LIMIT 1')
+        row = c.fetchone()
+        conn.close()
+        if row:
+            logger.info("Loaded persisted status from disk")
+            return json.loads(row[0])
+    except Exception as e:
+        logger.warning(f"Could not load persisted state: {e}")
+    return None
+
+
+def load_persisted_history():
+    """Load history snapshots from disk."""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute('SELECT snapshot_time, overall_status FROM history ORDER BY id DESC LIMIT ?', (MAX_HISTORY,))
+        rows = c.fetchall()
+        conn.close()
+        if rows:
+            logger.info(f"Loaded {len(rows)} history snapshots from disk")
+            return [{"timestamp": row[0], "overall_status": row[1]} for row in reversed(rows)]
+    except Exception as e:
+        logger.warning(f"Could not load persisted history: {e}")
+    return []
+
+
+def save_state(data):
+    """Persist status to disk."""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute('INSERT INTO status (data, timestamp) VALUES (?, ?)',
+                  (json.dumps(data), datetime.now(timezone.utc).isoformat()))
+        conn.commit()
+        conn.close()
+        logger.info(f"Status persisted to disk: {data.get('overall_status')}")
+    except Exception as e:
+        logger.error(f"Failed to save status: {e}")
+
+
+def save_history_snapshot(timestamp, overall_status):
+    """Persist history snapshot to disk."""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute('INSERT INTO history (snapshot_time, overall_status) VALUES (?, ?)',
+                  (timestamp, overall_status))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Failed to save history snapshot: {e}")
+
+
+def graceful_shutdown(signum, frame):
+    """Handle SIGTERM/SIGINT gracefully."""
+    logger.info(f"Signal {signum} received, shutting down gracefully...")
+    if _status:
+        save_state(_status)
+        logger.info("Final state persisted on shutdown")
+    exit(0)
+
+
+def on_exit():
+    """Called by atexit before process exits."""
+    if _status:
+        save_state(_status)
+        logger.info("atexit: Final state persisted")
 
 
 def verify_secret(req):
@@ -50,6 +158,9 @@ def post_status():
 
     _status = data
 
+    # Persist status to disk immediately
+    save_state(data)
+
     # Append snapshot to history
     snapshot = {
         "timestamp": data.get("last_updated", datetime.now(timezone.utc).isoformat()),
@@ -57,7 +168,10 @@ def post_status():
     }
     _history.append(snapshot)
 
-    # Keep only last 96 snapshots
+    # Persist history snapshot to disk
+    save_history_snapshot(snapshot["timestamp"], snapshot["overall_status"])
+
+    # Keep only last 96 snapshots in memory
     if len(_history) > MAX_HISTORY:
         _history = _history[-MAX_HISTORY:]
 
@@ -89,5 +203,25 @@ def root():
 
 
 if __name__ == '__main__':
+    # Initialize database on startup
+    init_db()
+
+    # Load persisted state from disk
+    _status = load_persisted_state()
+    _history = load_persisted_history()
+
+    if _status:
+        logger.info(f"Recovered state: {_status.get('overall_status')} at {_status.get('last_updated')}")
+    if _history:
+        logger.info(f"Recovered {len(_history)} history snapshots")
+
+    # Register signal handlers for graceful shutdown
+    signal.signal(signal.SIGTERM, graceful_shutdown)
+    signal.signal(signal.SIGINT, graceful_shutdown)
+
+    # Register atexit handler
+    atexit.register(on_exit)
+
     port = int(os.environ.get('PORT', 5055))
-    app.run(host='0.0.0.0', port=port)
+    logger.info(f"Starting Stack Guardian API on port {port}")
+    app.run(host='0.0.0.0', port=port, debug=False)
