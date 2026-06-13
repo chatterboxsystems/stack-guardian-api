@@ -191,9 +191,31 @@ def post_status():
     if not data:
         return jsonify({"error": "invalid JSON"}), 400
 
-    _status = data
+    # Distinguish between agent activity updates (from bot.py) and full status updates (from watchtower)
+    if "agent_activity" in data and "checks" not in data:
+        # Agent activity update - merge into existing status without overwriting checks/incidents
+        if _status:
+            # Preserve existing checks, incidents, overall_status
+            _status["agent_activity"] = data["agent_activity"]
+            _status["last_updated"] = data.get("last_updated", datetime.now(timezone.utc).isoformat())
+            logger.info("Merged agent_activity into existing status (preserved service checks)")
+        else:
+            # No existing status yet, create minimal one
+            _status = {
+                "overall_status": "UNKNOWN",
+                "checks": {},
+                "incidents": [],
+                "last_updated": data.get("last_updated", datetime.now(timezone.utc).isoformat()),
+                "run_count_today": 0,
+                "agent_activity": data["agent_activity"]
+            }
+            logger.info("Created status with agent_activity (no existing status)")
+    else:
+        # Full status update from Watchtower - replace entire status
+        _status = data
+        logger.info("Replaced full status from Watchtower")
 
-    # Handle agent activity if present
+    # Handle agent activity tracking
     if "agent_activity" in data:
         agent_data = data["agent_activity"]
         if agent_data.get("status") == "running":
@@ -207,22 +229,27 @@ def post_status():
                 _agent_activity["completed_agents"] = _agent_activity["completed_agents"][:MAX_AGENT_HISTORY]
             logger.info(f"Agent completed: {agent_data.get('agent_name')}")
 
-    # Persist status to disk immediately
-    save_state(data)
+    # Persist merged status to disk immediately
+    save_state(_status)
 
-    # Append snapshot to history
-    snapshot = {
-        "timestamp": data.get("last_updated", datetime.now(timezone.utc).isoformat()),
-        "overall_status": data.get("overall_status", "UNKNOWN")
-    }
-    _history.append(snapshot)
+    # Append snapshot to history only if this is a full Watchtower update (has checks)
+    if "checks" in data:
+        snapshot = {
+            "timestamp": data.get("last_updated", datetime.now(timezone.utc).isoformat()),
+            "overall_status": data.get("overall_status", "UNKNOWN")
+        }
+        _history.append(snapshot)
+        save_history_snapshot(snapshot["timestamp"], snapshot["overall_status"])
 
-    # Persist history snapshot to disk
-    save_history_snapshot(snapshot["timestamp"], snapshot["overall_status"])
-
-    # Keep only last 96 snapshots in memory
-    if len(_history) > MAX_HISTORY:
-        _history = _history[-MAX_HISTORY:]
+        # Keep only last 96 snapshots in memory
+        if len(_history) > MAX_HISTORY:
+            _history = _history[-MAX_HISTORY:]
+    else:
+        # Agent activity update - use timestamp from current status
+        snapshot = {
+            "timestamp": _status.get("last_updated", datetime.now(timezone.utc).isoformat()),
+            "overall_status": _status.get("overall_status", "UNKNOWN")
+        }
 
     return jsonify({"ok": True, "received": snapshot["timestamp"], "agent_activity": _agent_activity})
 
