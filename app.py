@@ -36,6 +36,31 @@ MAX_AGENT_HISTORY = 10  # Keep last 10 completed agents
 SECRET = os.environ.get('WATCHTOWER_SECRET', '')
 
 
+# ─── Initialization Hook ──────────────────────────────────────────────────────
+# Load persisted data on startup (before first request)
+# This runs on both local (python app.py) and Railway (Gunicorn) startup
+_initialized = False
+
+def init_app():
+    """Initialize app with persisted data from SQLite."""
+    global _status, _history, _initialized
+    if _initialized:
+        return
+
+    init_db()
+    _status = load_persisted_state()
+    _history = load_persisted_history()
+
+    if _status:
+        logger.info(f"✓ Recovered state: {_status.get('overall_status')} at {_status.get('last_updated')}")
+    else:
+        logger.info("⚠ No persisted state found (waiting for first Watchtower run)")
+    if _history:
+        logger.info(f"✓ Recovered {len(_history)} history snapshots")
+
+    _initialized = True
+
+
 # ─── Database Functions ──────────────────────────────────────────────────────
 def init_db():
     """Initialize SQLite database on startup."""
@@ -247,19 +272,10 @@ def root():
     })
 
 
+# Initialize app with persisted data (runs on both local and Railway startup)
+init_app()
+
 if __name__ == '__main__':
-    # Initialize database on startup
-    init_db()
-
-    # Load persisted state from disk
-    _status = load_persisted_state()
-    _history = load_persisted_history()
-
-    if _status:
-        logger.info(f"Recovered state: {_status.get('overall_status')} at {_status.get('last_updated')}")
-    if _history:
-        logger.info(f"Recovered {len(_history)} history snapshots")
-
     # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGTERM, graceful_shutdown)
     signal.signal(signal.SIGINT, graceful_shutdown)
