@@ -191,6 +191,10 @@ def post_status():
     if not data:
         return jsonify({"error": "invalid JSON"}), 400
 
+    # Always preserve agent activity metadata when updating status
+    # This ensures both Watchtower updates and agent updates coexist
+    old_agent_activity = _status.get("agent_activity") if _status else None
+
     # Distinguish between agent activity updates (from bot.py) and full status updates (from watchtower)
     if "agent_activity" in data and "checks" not in data:
         # Agent activity update - merge into existing status without overwriting checks/incidents
@@ -211,9 +215,13 @@ def post_status():
             }
             logger.info("Created status with agent_activity (no existing status)")
     else:
-        # Full status update from Watchtower - replace entire status
+        # Full status update from Watchtower - replace entire status but preserve agent activity
         _status = data
-        logger.info("Replaced full status from Watchtower")
+        if old_agent_activity:
+            _status["agent_activity"] = old_agent_activity
+            logger.info("Replaced full status from Watchtower (preserved agent_activity)")
+        else:
+            logger.info("Replaced full status from Watchtower")
 
     # Handle agent activity tracking
     if "agent_activity" in data:
