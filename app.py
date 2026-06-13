@@ -175,9 +175,19 @@ def get_status():
             "checks": {},
             "incidents": [],
             "run_count_today": 0,
-            "message": "Waiting for first Watchtower report..."
+            "message": "Waiting for first Watchtower report...",
+            "agent_status": {
+                "current_agent": _agent_activity["current_agent"],
+                "completed_agents": _agent_activity["completed_agents"][:3]
+            }
         })
-    return jsonify(_status)
+    # Always include current agent tracking in response
+    response = dict(_status)
+    response["agent_status"] = {
+        "current_agent": _agent_activity["current_agent"],
+        "completed_agents": _agent_activity["completed_agents"][:3]
+    }
+    return jsonify(response)
 
 
 @app.route('/status', methods=['POST'])
