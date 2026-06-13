@@ -14,7 +14,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Persistent storage configuration (deployed 2026-06-12 04:50 UTC)
-DB_PATH = os.environ.get('PERSISTENT_DATA_PATH', '/var/lib/stack-guardian/data')
+# Railway env var for volume mount: /var/lib/stack-guardian/data
+# Local fallback: ~/.stack-guardian (user-writable)
+DB_PATH = os.environ.get('PERSISTENT_DATA_PATH', os.path.expanduser('~/.stack-guardian'))
 DB_FILE = os.path.join(DB_PATH, 'stack-guardian.db')
 
 # Ensure the directory exists
