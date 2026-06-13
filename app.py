@@ -23,7 +23,12 @@ os.makedirs(DB_PATH, exist_ok=True)
 # In-memory cache (for fast access within same session)
 _status = None
 _history = []
+_agent_activity = {
+    "current_agent": None,
+    "completed_agents": []
+}
 MAX_HISTORY = 96  # 48 hours at 30min intervals
+MAX_AGENT_HISTORY = 10  # Keep last 10 completed agents
 
 # Optional auth token — set WATCHTOWER_SECRET env var in Railway
 SECRET = os.environ.get('WATCHTOWER_SECRET', '')
@@ -150,7 +155,7 @@ def get_status():
 
 @app.route('/status', methods=['POST'])
 def post_status():
-    global _status, _history
+    global _status, _history, _agent_activity
 
     if not verify_secret(request):
         return jsonify({"error": "unauthorized"}), 401
@@ -160,6 +165,20 @@ def post_status():
         return jsonify({"error": "invalid JSON"}), 400
 
     _status = data
+
+    # Handle agent activity if present
+    if "agent_activity" in data:
+        agent_data = data["agent_activity"]
+        if agent_data.get("status") == "running":
+            _agent_activity["current_agent"] = agent_data
+            logger.info(f"Agent running: {agent_data.get('agent_name')}")
+        elif agent_data.get("status") == "completed":
+            _agent_activity["current_agent"] = None
+            _agent_activity["completed_agents"].insert(0, agent_data)
+            # Keep only last 10
+            if len(_agent_activity["completed_agents"]) > MAX_AGENT_HISTORY:
+                _agent_activity["completed_agents"] = _agent_activity["completed_agents"][:MAX_AGENT_HISTORY]
+            logger.info(f"Agent completed: {agent_data.get('agent_name')}")
 
     # Persist status to disk immediately
     save_state(data)
@@ -178,16 +197,37 @@ def post_status():
     if len(_history) > MAX_HISTORY:
         _history = _history[-MAX_HISTORY:]
 
-    return jsonify({"ok": True, "received": snapshot["timestamp"]})
+    return jsonify({"ok": True, "received": snapshot["timestamp"], "agent_activity": _agent_activity})
 
 
 @app.route('/health', methods=['GET'])
 def health():
+    # Check if Infra (Claude Code) is active from latest status
+    infra_active = False
+    if _status and "checks" in _status:
+        infra_check = _status["checks"].get("infra_process", {})
+        infra_active = infra_check.get("status") == "GREEN"
+
     return jsonify({
         "status": "ok",
         "service": "stack-guardian-status-api",
         "has_data": _status is not None,
-        "history_count": len(_history)
+        "history_count": len(_history),
+        "agent_status": {
+            "infra": "ACTIVE" if infra_active else "INACTIVE",
+            "current_agent": _agent_activity["current_agent"],
+            "completed_agents": _agent_activity["completed_agents"][:3]  # Last 3
+        }
+    })
+
+
+@app.route('/agents', methods=['GET'])
+def get_agents():
+    """Get current and recent agent activity."""
+    return jsonify({
+        "current_agent": _agent_activity["current_agent"],
+        "completed_agents": _agent_activity["completed_agents"][:10],
+        "infra_status": "ACTIVE" if _status and _status.get("checks", {}).get("infra_process", {}).get("status") == "GREEN" else "INACTIVE"
     })
 
 
